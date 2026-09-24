@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "devspace_manager": {
+      "command": "node",
+      "args": ["dist/server.mjs"],
+      "cwd": ".",
+      "enabled": true,
+      "default_tools_approval_mode": "approve",
+      "tools": {
+        "start": { "approval_mode": "prompt" },
+        "stop": { "approval_mode": "prompt" },
+        "restart": { "approval_mode": "prompt" },
+        "open_url": { "approval_mode": "prompt" }
+      },
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 30
+    }
+  }
+}

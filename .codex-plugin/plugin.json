@@ -1,0 +1,29 @@
+{
+  "name": "devspace-manager",
+  "version": "0.1.0+codex.20260908180845",
+  "description": "Discover and manage local DevSpace development sessions from Codex Desktop.",
+  "author": {
+    "name": "Victor"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "DevSpace Manager",
+    "shortDescription": "Start, stop, inspect, and open DevSpace services.",
+    "longDescription": "DevSpace Manager discovers projects under local code roots, controls one DevSpace session per project, captures recent logs, and exposes forwarded service URLs.",
+    "developerName": "Victor",
+    "category": "Developer Tools",
+    "capabilities": [
+      "MCP Tools",
+      "Local Process Management",
+      "DevSpace",
+      "Service Discovery"
+    ],
+    "defaultPrompt": [
+      "Liste meus projetos DevSpace e seus estados.",
+      "Inicie o DevSpace deste projeto.",
+      "Mostre os logs e links do DevSpace atual."
+    ],
+    "brandColor": "#7C3AED"
+  },
+  "mcpServers": "./.mcp.json"
+}

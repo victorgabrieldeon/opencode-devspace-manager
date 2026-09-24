@@ -1,0 +1,30 @@
+{
+  "name": "devspace-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.tsx"
+  },
+  "scripts": {
+    "build": "bun build src/server.ts --target node --format esm --outfile dist/server.mjs --minify",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@opencode/plugin": "2.0.15",
+    "yaml": "2.8.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@opencode/theme": "2.0.15",
+    "@opentui/core": "0.5.12",
+    "@opentui/solid": "0.5.12",
+    "@types/bun": "1.2.21",
+    "@types/node": "24.10.1",
+    "solid-js": "1.9.9",
+    "typescript": "5.9.3"
+  }
+}
