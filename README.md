@@ -22,6 +22,8 @@ Pods             Logs                   URLs e proxies
 - **Timeline e mapa:** eventos Kubernetes e ultimos reinicios; ligacoes Service -> Pod verificadas pelos selectors do Kubernetes. Nao inventa dependencias de aplicacao.
 - **URLs:** mostra ingressos e proxies locais. Em Linux, uma URL de port forward so e exibida quando a porta esta aberta pelo processo DevSpace detectado.
 - **Acoes:** abre URLs, copia links, inicia/para apenas sessoes criadas por esta TUI, abre um shell no pod selecionado e retorna a TUI ao sair.
+- **Ambiente local:** lista nomes de variaveis do `.env` sem mostrar seus valores; edita uma variavel por vez, com entrada oculta para nomes sensiveis, e preserva o restante do arquivo.
+- **Providers:** mostra Kubernetes/contexto, provider do node, imagens e registries por aplicacao. Se houver um provider Dokploy declarado em `infra/dokploy/versions.tf`, exibe essa declaracao separadamente, sem afirmar status remoto.
 - **AI Debugger:** `A` cria uma sessao OpenCode no projeto com metadados do pod e pede uma investigacao de leitura. Nao inclui conteudo de logs ou valores de variaveis no prompt inicial.
 
 A tela se adapta a terminais largos e estreitos. Sessoes DevSpace iniciadas em outro terminal podem ser acompanhadas, mas este plugin nao as encerra.
@@ -62,8 +64,16 @@ Por padrao, o plugin busca projetos ate quatro niveis abaixo de `~/code` e tambe
 | `S` | Shell interativo no pod selecionado; ao sair, a TUI volta |
 | `A` | Criar uma sessao OpenCode para analisar o pod |
 | `r` / `?` / `q` | Atualizar / ajuda / sair do painel |
+| `v` / `b` | Variaveis do `.env` local / providers das aplicacoes |
+| `e` / `D` | Na tela Ambiente: substituir / limpar a variavel selecionada |
 
 Na tela de logs: `/` busca nas ultimas linhas; `f` alterna follow; espaco pausa; `e` filtra erros; `w` filtra avisos; `t` alterna timestamps; `c` limpa a visualizacao e pausa a atualizacao.
+
+### Edicao de variaveis locais
+
+Na tela **Ambiente** (`v`), `j/k` seleciona uma variavel, `e` substitui seu valor e `D` limpa o valor. O painel mostra apenas nome, presenca e origem (`.env` ou `.env.example`). Valores de chaves sensiveis sao digitados sem eco no terminal e nunca aparecem na listagem. A gravacao e atomica, conserva comentarios, as outras variaveis e as permissoes do arquivo; se `.env` mudou desde que foi lido, a operacao e recusada ate atualizar a tela.
+
+**A edicao afeta somente o `.env` local.** Projetos que geram Secrets Kubernetes a partir dele (por exemplo, via Kustomize) precisam de um novo deploy para atualizar o cluster. O plugin nao altera Secrets Kubernetes nem variaveis remotas do Dokploy automaticamente. Se `.env` estiver ausente ou for um symlink, edite/crie o arquivo fora da TUI antes de usar esse recurso.
 
 ## Como os dados sao obtidos
 

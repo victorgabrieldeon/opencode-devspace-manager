@@ -8,6 +8,7 @@ import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "s
 import { DevSpaceManager, type DevSpaceState, type DevSpaceStatus } from "./manager.js";
 import type { PodInfo, ProjectOverview } from "./observability.js";
 import { diagnose, routeEdges, summarizeHealth, timeline, type DoctorReport, type TimelineEntry } from "./diagnostics.js";
+import { listEnvironment, updateEnvironment, type EnvSnapshot } from "./environment.js";
 import { discoverProjects, type DevSpaceProject } from "./projects.js";
 
 const manager = new DevSpaceManager();
@@ -17,7 +18,7 @@ const C = {
   green: "#58e5a6", greenDeep: "#173a30", amber: "#f0c15b", purple: "#b39aff",
   red: "#f28692",
 } as const;
-type View = "overview" | "projects" | "pods" | "logs" | "urls" | "devspace" | "settings" | "doctor" | "timeline" | "graph" | "metrics";
+type View = "overview" | "projects" | "pods" | "logs" | "urls" | "devspace" | "settings" | "doctor" | "timeline" | "graph" | "metrics" | "environment" | "providers";
 const NAV: readonly { view: View; label: string; key: string }[] = [
   { view: "overview", label: "Visao geral", key: "1" },
   { view: "projects", label: "Projetos", key: "2" },
@@ -30,6 +31,8 @@ const NAV: readonly { view: View; label: string; key: string }[] = [
   { view: "timeline", label: "Timeline", key: "9" },
   { view: "graph", label: "Mapa de servicos", key: "0" },
   { view: "metrics", label: "Metricas", key: "m" },
+  { view: "environment", label: "Ambiente", key: "v" },
+  { view: "providers", label: "Providers", key: "b" },
 ];
 
 function Frame(props: { title: string; right?: string | undefined; children: JSX.Element; height?: number | undefined; grow?: boolean }) {
@@ -177,6 +180,12 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
   const [aiLoading, setAiLoading] = createSignal(false);
   const [history, setHistory] = createSignal<readonly TimelineEntry[]>([]);
   const [historyLoading, setHistoryLoading] = createSignal(false);
+  const [envSnapshot, setEnvSnapshot] = createSignal<EnvSnapshot>();
+  const [envSelected, setEnvSelected] = createSignal("");
+  const [envLoading, setEnvLoading] = createSignal(false);
+  const [envBusy, setEnvBusy] = createSignal(false);
+  const [envError, setEnvError] = createSignal("");
+  const [modalOpen, setModalOpen] = createSignal(false);
   const [devspaceFile, setDevspaceFile] = createSignal("");
   const [devspaceFiles, setDevspaceFiles] = createSignal<readonly string[]>([]);
   const [devspaceLines, setDevspaceLines] = createSignal<readonly string[]>([]);
@@ -211,6 +220,7 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
       || level === "warn" && /\bWARN(?:ING)?\b/iu.test(line))
       && line.toLowerCase().includes(logQuery().toLowerCase());
   }).map((line) => showTimestamps() ? line : line.replace(/^\d{4}-\d\d-\d\dT\S+\s*/u, ""));
+  const envEntry = () => envSnapshot()?.entries.find((item) => item.name === envSelected()) ?? envSnapshot()?.entries[0];
   const label = (directory: string) => projects().find((project) => project.directory === directory)?.name ?? basename(directory);
   const canStart = () => !!selected() && !busy() && !["running", "starting", "stopping"].includes(current()?.state ?? "")
     && !(current()?.state === "external" && current()?.pid !== null);
@@ -224,6 +234,12 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
     if (state === "failed") return C.red;
     return C.muted;
   };
+
+  async function dialog<T>(run: () => Promise<T>): Promise<T> {
+    setModalOpen(true);
+    try { return await run(); }
+    finally { setModalOpen(false); }
+  }
 
   async function fetchOverview(directory: string) {
     if (!directory || (observing() && inspectingDirectory === directory)) return;
@@ -346,11 +362,11 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
     const directory = selected();
     if (!directory || busy()) return;
     if (action !== "start") {
-      const confirmed = await ctx.ui.dialog.confirm({
+      const confirmed = await dialog(() => ctx.ui.dialog.confirm({
         title: `${action === "stop" ? "Parar" : "Reiniciar"} DevSpace`,
         message: `${label(directory)}\n${directory}\n\nIsto interrompe a sessao de desenvolvimento e os port forwards.`,
         label: { confirm: action === "stop" ? "Parar" : "Reiniciar", cancel: "Cancelar" },
-      });
+      }));
       if (!confirmed || disposed) return;
     }
     setBusy(true);
@@ -374,18 +390,18 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
       value: project.directory,
     }));
     if (!options.length) return;
-    const directory = await ctx.ui.dialog.select({ title: "Projeto DevSpace", current: selected(), options });
+    const directory = await dialog(() => ctx.ui.dialog.select({ title: "Projeto DevSpace", current: selected(), options }));
     if (directory) setSelected(directory);
   }
 
   async function choosePod() {
     const value = overview();
     if (!value?.pods.length) return;
-    const name = await ctx.ui.dialog.select({ title: `${value.name} / pods`, current: pod()?.name, options: value.pods.map((item) => ({
+    const name = await dialog(() => ctx.ui.dialog.select({ title: `${value.name} / pods`, current: pod()?.name, options: value.pods.map((item) => ({
       title: `${item.component}  ${item.ready}/${item.total}  ${item.phase}`,
       description: item.name,
       value: item.name,
-    })) });
+    })) }));
     if (name) {
       ++logGeneration;
       setLogsLoading(false);
@@ -407,14 +423,14 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
   async function chooseDevspaceLog() {
     const files = devspaceFiles();
     if (!files.length) return;
-    const filename = await ctx.ui.dialog.select({
+    const filename = await dialog(() => ctx.ui.dialog.select({
       title: "Logs DevSpace",
       current: devspaceFile() || files[0],
       options: [
         { title: "Voltar ao resumo", value: "" },
         ...files.map((value) => ({ title: value, value })),
       ],
-    });
+    }));
     if (filename === undefined) return;
     setDevspaceFile(filename);
     setView(filename ? "devspace" : "overview");
@@ -427,7 +443,7 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
   async function openLink() {
     const links = overview()?.links.map((item) => item.url) ?? current()?.links ?? [];
     if (!links.length) return;
-    const url = await ctx.ui.dialog.select({ title: "Abrir servico", options: links.map((value) => ({ title: value, value })) });
+    const url = await dialog(() => ctx.ui.dialog.select({ title: "Abrir servico", options: links.map((value) => ({ title: value, value })) }));
     if (!url) return;
     try {
       await manager.openUrl(url);
@@ -464,8 +480,87 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
   }
 
   async function searchLogs() {
-    const query = await ctx.ui.dialog.prompt({ title: "Buscar nos logs", description: "Filtro local nas ultimas 40 linhas", value: logQuery() });
+    const query = await dialog(() => ctx.ui.dialog.prompt({ title: "Buscar nos logs", description: "Filtro local nas ultimas 40 linhas", value: logQuery() }));
     if (query !== undefined) setLogQuery(query.trim());
+  }
+
+  async function loadEnvironment(directory = selected()) {
+    if (!directory || envLoading()) return;
+    setEnvLoading(true);
+    try {
+      const snapshot = await listEnvironment(directory);
+      if (disposed || selected() !== directory) return;
+      setEnvSnapshot(snapshot);
+      setEnvSelected((previous) => snapshot.entries.some((entry) => entry.name === previous) ? previous : snapshot.entries[0]?.name ?? "");
+      setEnvError("");
+    } catch (cause) {
+      if (!disposed && selected() === directory) setEnvError(message(cause));
+    } finally { if (!disposed) setEnvLoading(false); }
+  }
+
+  async function hiddenValue(name: string): Promise<string | undefined> {
+    ctx.renderer.suspend();
+    try {
+      return await new Promise<string | undefined>((resolve, reject) => {
+        const script = 'IFS= read -r -s -p "Novo valor de $1 (oculto; Enter vazio cancela): " value || exit 1; printf "\\n" >&2; printf "%s" "$value"';
+        const child = spawn("bash", ["-c", script, "--", name], { stdio: ["inherit", "pipe", "inherit"] });
+        let value = "";
+        child.stdout?.on("data", (chunk: Buffer) => {
+          value += chunk.toString("utf8");
+          if (value.length > 8192) { child.kill(); reject(new Error("Valor excede 8192 caracteres.")); }
+        });
+        child.once("error", reject);
+        child.once("exit", (code) => resolve(code === 0 && value ? value : undefined));
+      });
+    } finally { ctx.renderer.resume(); }
+  }
+
+  async function editEnvironment(entry = envEntry()) {
+    const snapshot = envSnapshot();
+    const directory = selected();
+    if (!entry || !snapshot || !directory || envBusy()) return;
+    try {
+      const value = entry.sensitive ? await dialog(() => hiddenValue(entry.name)) : await dialog(() => ctx.ui.dialog.prompt({
+        title: `Editar ${entry.name}`,
+        description: "Novo valor no .env local. O Secret do Kubernetes muda somente no proximo deploy.",
+        placeholder: "Novo valor (vazio para limpar)",
+      }));
+      if (value === undefined) return;
+      const confirmed = await dialog(() => ctx.ui.dialog.confirm({
+        title: `Salvar ${entry.name}?`,
+        message: `Altera apenas ${ctx.ui.format.path(snapshot.path)}. O cluster nao sera atualizado automaticamente.`,
+        label: { confirm: "Salvar", cancel: "Cancelar" },
+      }));
+      if (!confirmed || disposed) return;
+      setEnvBusy(true);
+      const next = await updateEnvironment(directory, entry.name, value, snapshot.revision);
+      if (selected() === directory) {
+        setEnvSnapshot(next);
+        setEnvSelected(entry.name);
+        setEnvError("");
+        ctx.ui.toast.show({ message: `${entry.name} salva no .env local. Reimplante para atualizar o Kubernetes.`, variant: "success" });
+      }
+    } catch (cause) { setEnvError(message(cause)); }
+    finally { setEnvBusy(false); }
+  }
+
+  async function clearEnvironment() {
+    const entry = envEntry();
+    const snapshot = envSnapshot();
+    const directory = selected();
+    if (!entry || !snapshot || !directory || envBusy()) return;
+    const confirmed = await dialog(() => ctx.ui.dialog.confirm({
+      title: `Limpar ${entry.name}?`,
+      message: "O valor ficara vazio no .env local. O cluster nao sera atualizado automaticamente.",
+      label: { confirm: "Limpar", cancel: "Cancelar" },
+    }));
+    if (!confirmed || disposed) return;
+    setEnvBusy(true);
+    try {
+      const next = await updateEnvironment(directory, entry.name, "", snapshot.revision);
+      if (selected() === directory) { setEnvSnapshot(next); setEnvError(""); }
+    } catch (cause) { setEnvError(message(cause)); }
+    finally { setEnvBusy(false); }
   }
 
   async function analyzePod() {
@@ -510,6 +605,16 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
   }
 
   function movePod(direction: number) {
+    if (view() === "environment") {
+      const entries = envSnapshot()?.entries ?? [];
+      const index = entries.findIndex((item) => item.name === envEntry()?.name);
+      const next = entries[Math.max(0, Math.min(entries.length - 1, index + direction))];
+      if (next) {
+        setEnvSelected(next.name);
+        queueMicrotask(() => scroll?.scrollChildIntoView(`env-${next.name}`));
+      }
+      return;
+    }
     const list = overview()?.pods ?? [];
     if (list.length && (view() === "overview" || view() === "pods")) {
       const index = list.findIndex((item) => item.name === pod()?.name);
@@ -524,12 +629,13 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
 
   ctx.keymap.layer(() => ({
     mode: "global",
+    enabled: () => !modalOpen(),
     commands: [
       { id: "devspace.project", title: "Selecionar projeto DevSpace", bind: "p", enabled: () => projects().length > 0, run: choose },
       { id: "devspace.pod", title: "Selecionar pod DevSpace", bind: "d", enabled: () => !!pod(), run: choosePod },
       { id: "devspace.logs", title: "Ver logs do pod", bind: "l", enabled: () => !!pod(), run: toggleLogs },
       { id: "devspace.session.logs", title: "Ver logs DevSpace", bind: "g", enabled: () => devspaceFiles().length > 0, run: chooseDevspaceLog },
-      { id: "devspace.refresh", title: "Atualizar DevSpace", bind: "r", enabled: () => !busy(), run: async () => { await refresh(); void fetchOverview(selected()); } },
+      { id: "devspace.refresh", title: "Atualizar DevSpace", bind: "r", enabled: () => !busy(), run: async () => { await refresh(); void fetchOverview(selected()); if (view() === "environment") void loadEnvironment(); } },
       { id: "devspace.start", title: "Iniciar DevSpace", bind: "s", enabled: canStart, run: () => act("start") },
       { id: "devspace.stop", title: "Parar DevSpace", bind: "x", enabled: canStop, run: () => act("stop") },
       { id: "devspace.restart", title: "Reiniciar DevSpace", bind: "t", enabled: canRestart, run: () => act("restart") },
@@ -547,6 +653,10 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
       { id: "devspace.view.timeline", title: "Timeline", bind: "9", run: () => setView("timeline") },
       { id: "devspace.view.graph", title: "Mapa de servicos", bind: "0", run: () => setView("graph") },
       { id: "devspace.view.metrics", title: "Metricas", bind: "m", run: () => setView("metrics") },
+      { id: "devspace.view.environment", title: "Variaveis de ambiente", bind: "v", run: () => setView("environment") },
+      { id: "devspace.view.providers", title: "Providers das aplicacoes", bind: "b", run: () => setView("providers") },
+      { id: "devspace.environment.edit", title: "Editar variavel local", bind: "e", enabled: () => view() === "environment" && !!envEntry() && !envBusy(), run: () => editEnvironment() },
+      { id: "devspace.environment.clear", title: "Limpar variavel local", bind: "shift+d", enabled: () => view() === "environment" && !!envEntry() && !envBusy(), run: clearEnvironment },
       { id: "devspace.shell", title: "Shell no pod selecionado", bind: "shift+s", enabled: () => !!pod(), run: shellIntoPod },
       { id: "devspace.analyze", title: "Analisar pod com IA", bind: "shift+a", enabled: () => !!pod() && !aiLoading(), run: analyzePod },
       { id: "devspace.urls.copy", title: "Copiar URLs", bind: "c", enabled: () => view() === "urls" && !!overview()?.links.length, run: copyUrls },
@@ -559,10 +669,10 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
       { id: "devspace.logs.timestamps", title: "Alternar timestamps", bind: "t", enabled: () => view() === "logs", run: () => setShowTimestamps((value) => !value) },
       { id: "devspace.view.urls.shortcut", title: "Ver URLs", bind: "u", run: () => setView("urls") },
       { id: "devspace.exit", title: "Sair do DevSpace", bind: "q", run: () => ctx.ui.router.navigate({ type: "home" }) },
-      { id: "devspace.help", title: "Ajuda do DevSpace", bind: "?", run: () => ctx.ui.dialog.alert({
+      { id: "devspace.help", title: "Ajuda do DevSpace", bind: "?", run: () => dialog(() => ctx.ui.dialog.alert({
         title: "DevSpace / atalhos",
-        message: "1-9/0 secoes, m metricas  |  j/k pods ou rolagem  |  p projeto  |  d pod  |  l logs  |  g logs DevSpace  |  S shell  |  A analisar  |  o URL  |  c copiar URLs  |  / buscar logs  |  f follow  |  espaco pausa  |  e erros  |  w avisos  |  r atualizar  |  q sair",
-      }) },
+        message: "1-9/0 secoes, m metricas, v ambiente, b providers  |  j/k navegar  |  e editar env  |  D limpar env  |  p projeto  |  d pod  |  l logs  |  g logs DevSpace  |  S shell  |  A analisar  |  o URL  |  c copiar URLs  |  / buscar logs  |  f follow  |  espaco pausa  |  r atualizar  |  q sair",
+      })) },
       { id: "devspace.back", title: "Voltar ao resumo ou OpenCode", bind: "escape", run: () => view() === "overview" ? ctx.ui.router.navigate({ type: "home" }) : setView("overview") },
     ],
   }));
@@ -606,6 +716,9 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
     setDevspaceLines([]);
     setInspectError("");
     setDevspaceError("");
+    setEnvSnapshot(undefined);
+    setEnvSelected("");
+    setEnvError("");
     void manager.devspaceLogFiles(directory).then((files) => { if (!disposed && selected() === directory) setDevspaceFiles(files); })
       .catch((cause) => { if (!disposed && selected() === directory) setDevspaceError(message(cause)); });
     void fetchOverview(directory);
@@ -614,6 +727,7 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
   createEffect(on(view, (next) => {
     if (next === "doctor") void loadDoctor();
     if (next === "timeline") void loadTimeline();
+    if (next === "environment") void loadEnvironment();
   }));
 
   return (
@@ -629,7 +743,7 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
 
       <box flexDirection="row" flexGrow={1} minHeight={0}>
         <Show when={wide()}>
-          <box width={24} flexShrink={0} backgroundColor={C.panel} border={["right"]} borderColor={C.border} flexDirection="column" padding={1} gap={1}>
+          <box width={24} flexShrink={0} backgroundColor={C.panel} border={["right"]} borderColor={C.border} flexDirection="column" padding={1} gap={height() >= 46 ? 1 : 0}>
             <For each={NAV}>{(entry) => (
               <box height={2} backgroundColor={view() === entry.view ? C.blueDeep : C.panel} paddingX={1}
                 onMouseDown={() => setView(entry.view)}>
@@ -794,7 +908,43 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
                         <text fg={C.muted}>Contexto   {overview()?.context ?? "--"}</text>
                         <text fg={C.muted}>Namespace {overview()?.namespace ?? "--"}</text>
                         <text fg={C.muted}>Origem     {state().state === "external" ? "Outra sessao" : "Esta TUI"}</text>
+                        <text fg={C.blue}>v Ambiente local  /  b Providers das aplicacoes</text>
                         <For each={overview()?.warnings ?? []}>{(warning) => <text fg={C.amber}>{warning}</text>}</For>
+                      </Show>
+                      <Show when={view() === "environment"}>
+                        <text fg={C.text}>Fonte local: {ctx.ui.format.path(envSnapshot()?.path ?? `${selected()}/.env`)}</text>
+                        <text fg={C.amber}>Valores ocultos. Salvar aqui nao atualiza os Secrets do cluster; reimplante o projeto depois.</text>
+                        <Show when={envLoading()}><text fg={C.muted}>Lendo nomes das variaveis...</text></Show>
+                        <Show when={envError()}><text fg={C.red}>{envError()}</text></Show>
+                        <For each={envSnapshot()?.entries ?? []} fallback={<text fg={C.muted}>Nenhuma variavel disponivel em .env.</text>}>
+                          {(entry) => (
+                            <box id={`env-${entry.name}`} height={1} backgroundColor={entry.name === envEntry()?.name ? C.blueDeep : C.panel}
+                              onMouseDown={() => setEnvSelected(entry.name)}>
+                              <text fg={entry.name === envEntry()?.name ? C.text : C.muted}>
+                                {`${entry.name === envEntry()?.name ? "> " : "  "}${clip(entry.name, 30)}  ${entry.set ? "definida" : "vazia"}  ${entry.sensitive ? "protegida" : "oculta"}  ${entry.source}`}
+                              </text>
+                            </box>
+                          )}
+                        </For>
+                        <text fg={C.blue}>j/k Selecionar  /  e Editar  /  D Limpar  /  r Recarregar</text>
+                      </Show>
+                      <Show when={view() === "providers"}>
+                        <text fg={C.muted}>Provider do ambiente atual: Kubernetes / {overview()?.context ?? "contexto indisponivel"}</text>
+                        <text fg={C.muted}>Node provider e registry sao metadados da imagem; nao representam um deploy de producao.</text>
+                        <Show when={overview()?.declaredProductionProvider}>
+                          <text fg={C.amber}>Producao: {overview()?.declaredProductionProvider}</text>
+                        </Show>
+                        <For each={overview()?.providers ?? []} fallback={<text fg={C.muted}>Nenhuma aplicacao detectada no cluster.</text>}>
+                          {(provider) => (
+                            <box border borderColor={C.border} backgroundColor={C.panelAlt} flexDirection="column" paddingX={1}>
+                              <text fg={C.blue}>{provider.component.toUpperCase()}</text>
+                              <text fg={C.muted}>Infra    {provider.infrastructure} / {overview()?.namespace ?? "--"}</text>
+                              <text fg={C.muted}>Node     {provider.node || "?"}  /  {provider.nodeProvider}</text>
+                              <text fg={C.muted}>Registry {provider.registries.join(", ") || "desconhecido"}</text>
+                              <For each={provider.images}>{(image) => <text fg={C.text}>Imagem   {image}</text>}</For>
+                            </box>
+                          )}
+                        </For>
                       </Show>
                       <Show when={view() === "doctor"}>
                         <text fg={doctor()?.problems ? C.amber : C.green}>
@@ -854,8 +1004,9 @@ function Dashboard(props: { roots: readonly string[]; initialView?: View | undef
         <text fg={health()?.state === "degraded" || current()?.state === "failed" ? C.amber : C.green}>
           {current() ? `* ${health()?.state.toUpperCase() ?? stateLabel(current()?.state)}  |  ${health() ? `${readyPods()}/${overview()?.pods.length ?? 0} pods  |  ` : ""}${current()?.state === "external" ? "Sessao externa" : "DevSpace local"}${width() >= 90 && overview()?.hostMetrics ? `  |  Docker ${overview()?.hostMetrics?.cpu}` : ""}` : "* DevSpace"}
         </text>
-        <text fg={C.muted}>{clip(wide() ? "1-9/0,m Secoes   j/k Navegar   o URL   l Logs   S Shell   A Analisar   r Atualizar   ? Ajuda   q Sair"
-          : "1-9/0 Menu   8 Doctor   m Metricas   l Logs   q Sair", Math.max(20, width() - 3))}</text>
+        <text fg={C.muted}>{clip(view() === "environment" ? "v Ambiente   j/k Variaveis   e Editar   D Limpar   r Recarregar   q Sair"
+          : wide() ? "1-9/0,m,v,b Secoes   j/k Navegar   o URL   l Logs   S Shell   A Analisar   ? Ajuda   q Sair"
+          : "1-9/0 Menu   v Ambiente   b Providers   8 Doctor   q Sair", Math.max(20, width() - 3))}</text>
       </box>
     </box>
   );

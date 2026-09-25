@@ -35,6 +35,9 @@ describe("DevSpace manager", () => {
     const bin = join(project, "bin");
     await mkdir(bin);
     await mkdir(join(project, ".devspace"));
+    await mkdir(join(project, "infra"));
+    await mkdir(join(project, "infra", "dokploy"));
+    await writeFile(join(project, "infra", "dokploy", "versions.tf"), 'source = "j0bit/dokploy"\n');
     await writeFile(join(project, "devspace.yaml"), "version: v2beta1\nname: example\ndev:\n  api:\n    labelSelector:\n      app.kubernetes.io/name: example\n");
     await writeFile(join(project, ".devspace", "cache.yaml"), "lastContext:\n  context: test-cluster\n  namespace: sandbox\n");
     await writeFile(join(project, "Caddyfile"), "http://api.example.localhost {\n reverse_proxy api:3000\n}\n");
@@ -42,7 +45,7 @@ describe("DevSpace manager", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
     const pod = { metadata: { name: "api-abc", labels: { "app.kubernetes.io/component": "api", "app.kubernetes.io/name": "example" }, creationTimestamp: "2026-01-01T00:00:00Z" },
-      spec: { nodeName: "node-1", containers: [{ name: "api", readinessProbe: { httpGet: { path: "/health" } } }] },
+      spec: { nodeName: "node-1", containers: [{ name: "api", image: "ghcr.io/example/api:dev", readinessProbe: { httpGet: { path: "/health" } } }] },
       status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }], containerStatuses: [{ name: "api", ready: true, restartCount: 2,
         state: { running: { startedAt: "2026-01-01T00:00:30Z" } }, lastState: { terminated: { finishedAt: "2026-01-01T00:00:00Z", reason: "Error", exitCode: 1 } } }] } };
     const service = { metadata: { name: "api", labels: { "app.kubernetes.io/component": "api" } }, spec: { selector: { "app.kubernetes.io/component": "api" }, ports: [{ name: "http", port: 3000 }] } };
@@ -52,6 +55,7 @@ case "$*" in
   *"get pods"*) printf '%s\\n' '${JSON.stringify({ items: [pod] })}' ;;
   *"get services"*) printf '%s\\n' '${JSON.stringify({ items: [service] })}' ;;
   *"get ingresses"*) printf '%s\\n' '{"items":[]}' ;;
+  *"get nodes"*) printf '%s\\n' '{"items":[{"metadata":{"name":"node-1"},"spec":{"providerID":"kind://docker/example/node-1"}}]}' ;;
   *"get events"*) printf '%s\\n' '${JSON.stringify({ items: [
     { involvedObject: { name: "api-abc" }, lastTimestamp: "2026-01-01T00:01:00Z", type: "Warning", reason: "Unhealthy", message: "Readiness failed" },
     { involvedObject: { name: "unrelated-pod" }, lastTimestamp: "2026-01-01T00:01:00Z", type: "Warning", reason: "Unhealthy", message: "Unrelated" },
@@ -75,6 +79,8 @@ esac
       expect(result.hostMetrics).toMatchObject({ node: "node-1", cpu: "32.50%", memory: "1GiB / 8GiB", memoryPercent: "12.5%" });
       expect(result.pods).toMatchObject([{ name: "api-abc", ready: 1, total: 1, restarts: 2 }]);
       expect(result.services).toMatchObject([{ name: "api", ports: ["http:3000"] }]);
+      expect(result.providers).toMatchObject([{ component: "api", nodeProvider: "Kind / Docker", registries: ["ghcr.io"] }]);
+      expect(result.declaredProductionProvider).toContain("Dokploy / Terraform");
       expect(result.links.map((item) => item.url)).toContain(`http://api.example.localhost:${port}/`);
       expect((await inspectProject(project, null)).links).toEqual([]);
       expect(routeEdges(result)).toEqual([{ service: "api", pod: "api" }]);

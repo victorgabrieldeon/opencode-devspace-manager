@@ -13,6 +13,7 @@ export type PodInfo = {
   restarts: number;
   created: string;
   node: string;
+  images: readonly string[];
   labels: Readonly<Record<string, string>>;
   lastRestart: string | null;
   lastReason: string | null;
@@ -25,6 +26,7 @@ export type PodInfo = {
 };
 
 export type ServiceInfo = { name: string; component: string; ports: readonly string[]; selector: Readonly<Record<string, string>> };
+export type AppProvider = { component: string; infrastructure: string; node: string; nodeProvider: string; images: readonly string[]; registries: readonly string[] };
 export type ProjectOverview = {
   directory: string;
   name: string;
@@ -32,6 +34,8 @@ export type ProjectOverview = {
   namespace: string;
   pods: readonly PodInfo[];
   services: readonly ServiceInfo[];
+  providers: readonly AppProvider[];
+  declaredProductionProvider?: string;
   links: readonly { url: string; source: "proxy" | "ingress" }[];
   metrics: "available" | "unavailable";
   hostMetrics?: { node: string; cpu: string; memory: string; memoryPercent: string; network: string };
@@ -119,6 +123,7 @@ function podInfo(pod: RecordValue): PodInfo {
     restarts: array(object(pod.status).containerStatuses).reduce<number>((sum, item) => sum + (Number(object(item).restartCount) || 0), 0),
     created: text(metadata.creationTimestamp),
     node: text(object(pod.spec).nodeName),
+    images: array(object(pod.spec).containers).map((entry) => text(object(entry).image)).filter(Boolean),
     labels,
     lastRestart: last ? text(last.finishedAt) : null,
     lastReason: last ? text(last.reason) || null : null,
@@ -142,6 +147,20 @@ function serviceInfo(service: RecordValue): ServiceInfo {
       return `${text(port.name) || "tcp"}:${String(port.port ?? "?")}`;
     }),
   };
+}
+
+function imageRegistry(image: string): string {
+  if (!image.includes("/")) return "docker.io";
+  const first = image.split("/")[0] ?? "";
+  return first.includes(".") || first.includes(":") || first === "localhost" ? first : "docker.io";
+}
+
+function nodeProvider(value: string): string {
+  if (value.startsWith("kind://docker/")) return "Kind / Docker";
+  if (value.startsWith("aws://")) return "AWS (node)";
+  if (value.startsWith("gce://")) return "Google Cloud (node)";
+  if (value.startsWith("azure://")) return "Azure (node)";
+  return value ? value.split("://")[0] ?? "Kubernetes" : "Kubernetes (provider nao informado)";
 }
 
 function ingressLinks(ingresses: RecordValue[]): ProjectOverview["links"] {
@@ -214,6 +233,29 @@ export async function inspectProject(directory: string, pid: number | null): Pro
   const summaries = pods.map(podInfo).map((pod) => ({ ...pod, containers: pod.containers.map((container) => ({
     ...container, ...usage.get(`${pod.name}/${container.name}`),
   })) })).sort((a, b) => a.component.localeCompare(b.component) || a.name.localeCompare(b.name));
+  const nodeOutput = await optionalCommand("kubectl", kubectlArgs(context, namespace, ["get", "nodes", "-o", "json"]), directory);
+  const nodeIDs = new Map<string, string>();
+  if (nodeOutput) {
+    try {
+      for (const item of array(object(JSON.parse(nodeOutput)).items)) {
+        const node = object(item);
+        nodeIDs.set(text(object(node.metadata).name), text(object(node.spec).providerID));
+      }
+    } catch { /* Node metadata is optional for an application overview. */ }
+  }
+  const providers: AppProvider[] = [...new Set(summaries.map((pod) => pod.component))].map((component) => {
+    const group = summaries.filter((pod) => pod.component === component);
+    const node = group[0]?.node ?? "";
+    const images = [...new Set(group.flatMap((pod) => pod.images))];
+    return { component, infrastructure: `Kubernetes / ${context}`, node,
+      nodeProvider: nodeProvider(nodeIDs.get(node) ?? ""), images,
+      registries: [...new Set(images.map(imageRegistry))] };
+  });
+  let declaredProductionProvider: string | undefined;
+  try {
+    const terraform = await readFile(join(directory, "infra", "dokploy", "versions.tf"), "utf8");
+    if (/source\s*=\s*"[^"]*\/dokploy"/u.test(terraform)) declaredProductionProvider = "Dokploy / Terraform (declarado no repositorio; status remoto nao consultado)";
+  } catch (error) { if (!isMissing(error)) throw error; }
   let hostMetrics: ProjectOverview["hostMetrics"];
   if (metrics === "unavailable") {
     const node = summaries.find((pod) => pod.node)?.node;
@@ -256,7 +298,8 @@ export async function inspectProject(directory: string, pid: number | null): Pro
   ];
   return {
     directory, name: config.name, context, namespace, pods: summaries,
-    services: servicesResult.status === "fulfilled" ? servicesResult.value.map(serviceInfo) : [],
+    services: servicesResult.status === "fulfilled" ? servicesResult.value.map(serviceInfo) : [], providers,
+    ...(declaredProductionProvider ? { declaredProductionProvider } : {}),
     links, metrics, ...(hostMetrics ? { hostMetrics } : {}), warnings,
   };
 }
